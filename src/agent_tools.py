@@ -6,6 +6,7 @@ from langchain_community.utilities import SQLDatabase
 from langchain_openai import ChatOpenAI
 from langchain_community.agent_toolkits import create_sql_agent, SQLDatabaseToolkit
 from langchain_core.tools import Tool
+from langchain_community.tools import TavilySearchResults
 
 def criar_ferramenta_sql() -> Tool:
     """
@@ -25,7 +26,6 @@ def criar_ferramenta_sql() -> Tool:
 
     llm = ChatOpenAI(model="gpt-4o", temperature=0)
     toolkit = SQLDatabaseToolkit(db=db, llm=llm)
-    tools = toolkit.get_tools()
 
     system_prompt_guardrail = f"""
     Você é um agente especialista em SQL projetado para interagir com um banco de dados de casos de SRAG.
@@ -71,3 +71,29 @@ def criar_ferramenta_sql() -> Tool:
 
     print("✅ Agente SQL encapsulado como ferramenta com sucesso.")
     return sql_agent_tool
+
+
+def criar_ferramenta_busca_noticias() -> Tool:
+    """
+    Cria e configura a ferramenta de busca de notícias em tempo real usando Tavily.
+    """
+    print("\n--- Configurando a Ferramenta de Busca de Notícias (NewsTool) ---")
+    load_dotenv()
+    
+    if not os.getenv("TAVILY_API_KEY"):
+        raise ValueError("A chave de API TAVILY_API_KEY não foi encontrada no arquivo .env")
+
+    # Inicializa a ferramenta TavilySearchResults, buscando os 5 resultados mais relevantes.
+    tavily_tool = TavilySearchResults(
+        name="ferramenta_busca_noticias",
+        description="""
+            Use esta ferramenta para buscar notícias e informações recentes sobre saúde,
+            especialmente sobre Síndrome Respiratória Aguda Grave (SRAG), COVID-19, Influenza e vacinação.
+            A entrada deve ser um tópico de busca claro e conciso.
+            Exemplo: 'aumento de casos de SRAG em crianças no Brasil 2025'
+        """,
+        max_results=5
+    )
+
+    print("✅ Ferramenta de Busca de Notícias configurada com sucesso.")
+    return tavily_tool
