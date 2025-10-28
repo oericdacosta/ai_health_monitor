@@ -1,5 +1,3 @@
-# src/agent_tools.py
-
 import os
 from dotenv import load_dotenv
 from typing import List
@@ -13,11 +11,13 @@ from langchain_community.tools import TavilySearchResults
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
+from langchain_community.retrievers import BM25Retriever
+# EnsembleRetriever is not available in this environment; we'll combine retriever results manually below.
+
 
 def criar_ferramenta_sql() -> Tool:
     """
     Cria e configura um agente SQL completo e o encapsula como uma única ferramenta.
-    Utiliza SQLDatabaseToolkit e create_sql_agent com guardrails de segurança via prompt.
     """
     print("\n--- Configurando a Ferramenta de Consulta SQL (SQLTool) ---")
 
@@ -81,11 +81,7 @@ def criar_ferramenta_sql() -> Tool:
 
 def criar_ferramenta_rag_noticias() -> Tool:
     """
-    Cria uma ferramenta RAG completa que:
-    1. Busca notícias recentes usando Tavily.
-    2. Processa e segmenta o conteúdo.
-    3. Cria um banco de dados vetorial em memória.
-    4. Retorna os trechos mais relevantes para a pergunta.
+    Cria uma ferramenta RAG completa com busca híbrida (semântica + palavra-chave).
     """
     print("\n--- Configurando a Ferramenta RAG de Notícias (NewsRAGTool) ---")
     load_dotenv()
@@ -93,51 +89,84 @@ def criar_ferramenta_rag_noticias() -> Tool:
     if not os.getenv("TAVILY_API_KEY"):
         raise ValueError("A chave de API TAVILY_API_KEY não foi encontrada no arquivo .env")
 
-    # Ferramenta interna para a busca inicial
-    tavily_search = TavilySearchResults(max_results=5)
+    tavily_search = TavilySearchResults(max_results=7)
 
     def rag_pipeline(query: str) -> str:
         """Executa o pipeline completo de RAG para uma dada consulta."""
         print(f"\n[NewsRAGTool] Iniciando pipeline para a consulta: '{query}'")
 
-        # 1. Busca em Tempo Real (Retrieval - Etapa 1)
         print("[NewsRAGTool] Buscando notícias com Tavily...")
         raw_documents = tavily_search.invoke(query)
         
         if not raw_documents:
             return "Nenhuma notícia relevante encontrada."
 
-        # 2. Parsing e Chunking
         print("[NewsRAGTool] Processando e segmentando os documentos...")
         documents = [Document(page_content=doc["content"], metadata={"source": doc["url"], "title": doc["title"]}) for doc in raw_documents]
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
         chunks = text_splitter.split_documents(documents)
         
-        # 3. Embeddings e Banco Vetorial (Indexação)
-        print("[NewsRAGTool] Criando embeddings e indexando em FAISS...")
+        if not chunks:
+            return "Não foi possível processar o conteúdo das notícias."
+
+        print("[NewsRAGTool] Criando retriever semântico (FAISS)...")
         embeddings_model = OpenAIEmbeddings()
         vectorstore = FAISS.from_documents(chunks, embeddings_model)
-        
-        # 4. Recuperação Final (Retrieval - Etapa 2)
-        retriever = vectorstore.as_retriever(search_kwargs={"k": 3}) # Pega os 3 chunks mais relevantes
-        retrieved_chunks = retriever.invoke(query)
-        
-        # 5. Formatação da Saída
+        dense_retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
+
+        print("[NewsRAGTool] Criando retriever de palavra-chave (BM25)...")
+        bm25_retriever = BM25Retriever.from_documents(chunks)
+        bm25_retriever.k = 4
+
+        print("[NewsRAGTool] Combinando retrievers manualmente (fallback)...")
+
+        def combine_retrievers(retrievers, weights, query, top_k=4):
+            """
+            Consulta cada retriever, pontua resultados por peso e rank,
+            remove duplicatas e retorna os melhores documentos.
+            """
+            scores = {}
+            doc_map = {}
+
+            for retriever, weight in zip(retrievers, weights):
+                # Compatível com retrievers novos (invoke) e antigos (get_relevant_documents)
+                if hasattr(retriever, "invoke"):
+                    docs = retriever.invoke(query)
+                elif hasattr(retriever, "get_relevant_documents"):
+                    docs = retriever.get_relevant_documents(query)
+                else:
+                    raise AttributeError(f"Retriever {type(retriever)} não tem método de busca compatível.")
+
+                for rank, doc in enumerate(docs[:top_k]):
+                    key = (doc.page_content, doc.metadata.get("source"), doc.metadata.get("title"))
+                    contribution = weight * (1.0 / (rank + 1))
+                    scores[key] = scores.get(key, 0.0) + contribution
+                    doc_map[key] = doc
+
+            sorted_keys = sorted(scores.keys(), key=lambda k: scores[k], reverse=True)
+            merged_docs = [doc_map[k] for k in sorted_keys][:top_k]
+            return merged_docs
+
+        retrieved_docs = combine_retrievers(
+            retrievers=[dense_retriever, bm25_retriever],
+            weights=[0.5, 0.5],
+            query=query,
+            top_k=4
+        )
+
         contexto = "\n\n---\n\n".join(
             f"Fonte: {doc.metadata.get('title', doc.metadata.get('source'))}\nConteúdo: {doc.page_content}"
-            for doc in retrieved_chunks
+            for doc in retrieved_docs
         )
         print("[NewsRAGTool] Pipeline concluído. Contexto relevante extraído.")
         return contexto
 
-    # Encapsula o pipeline RAG completo como uma única ferramenta para o agente
     news_rag_tool = Tool(
         name="ferramenta_rag_noticias",
         description="""
             Use esta ferramenta para buscar e extrair informações contextuais de notícias recentes sobre saúde,
             especialmente sobre Síndrome Respiratória Aguda Grave (SRAG), COVID-19, Influenza e vacinação.
             A entrada deve ser um tópico de busca claro para encontrar contexto relevante.
-            Exemplo: 'contexto sobre o aumento de casos de SRAG em crianças no Brasil 2025'
         """,
         func=rag_pipeline
     )
