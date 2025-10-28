@@ -2,10 +2,17 @@
 
 import os
 from dotenv import load_dotenv
+from typing import List
+
+# LangChain Imports
 from langchain_community.utilities import SQLDatabase
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.agent_toolkits import create_sql_agent, SQLDatabaseToolkit
 from langchain_core.tools import Tool
+from langchain_community.tools import TavilySearchResults
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain_core.documents import Document
 
 def criar_ferramenta_sql() -> Tool:
     """
@@ -25,7 +32,6 @@ def criar_ferramenta_sql() -> Tool:
 
     llm = ChatOpenAI(model="gpt-4o", temperature=0)
     toolkit = SQLDatabaseToolkit(db=db, llm=llm)
-    tools = toolkit.get_tools()
 
     system_prompt_guardrail = f"""
     Você é um agente especialista em SQL projetado para interagir com um banco de dados de casos de SRAG.
@@ -71,3 +77,70 @@ def criar_ferramenta_sql() -> Tool:
 
     print("✅ Agente SQL encapsulado como ferramenta com sucesso.")
     return sql_agent_tool
+
+
+def criar_ferramenta_rag_noticias() -> Tool:
+    """
+    Cria uma ferramenta RAG completa que:
+    1. Busca notícias recentes usando Tavily.
+    2. Processa e segmenta o conteúdo.
+    3. Cria um banco de dados vetorial em memória.
+    4. Retorna os trechos mais relevantes para a pergunta.
+    """
+    print("\n--- Configurando a Ferramenta RAG de Notícias (NewsRAGTool) ---")
+    load_dotenv()
+    
+    if not os.getenv("TAVILY_API_KEY"):
+        raise ValueError("A chave de API TAVILY_API_KEY não foi encontrada no arquivo .env")
+
+    # Ferramenta interna para a busca inicial
+    tavily_search = TavilySearchResults(max_results=5)
+
+    def rag_pipeline(query: str) -> str:
+        """Executa o pipeline completo de RAG para uma dada consulta."""
+        print(f"\n[NewsRAGTool] Iniciando pipeline para a consulta: '{query}'")
+
+        # 1. Busca em Tempo Real (Retrieval - Etapa 1)
+        print("[NewsRAGTool] Buscando notícias com Tavily...")
+        raw_documents = tavily_search.invoke(query)
+        
+        if not raw_documents:
+            return "Nenhuma notícia relevante encontrada."
+
+        # 2. Parsing e Chunking
+        print("[NewsRAGTool] Processando e segmentando os documentos...")
+        documents = [Document(page_content=doc["content"], metadata={"source": doc["url"], "title": doc["title"]}) for doc in raw_documents]
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+        chunks = text_splitter.split_documents(documents)
+        
+        # 3. Embeddings e Banco Vetorial (Indexação)
+        print("[NewsRAGTool] Criando embeddings e indexando em FAISS...")
+        embeddings_model = OpenAIEmbeddings()
+        vectorstore = FAISS.from_documents(chunks, embeddings_model)
+        
+        # 4. Recuperação Final (Retrieval - Etapa 2)
+        retriever = vectorstore.as_retriever(search_kwargs={"k": 3}) # Pega os 3 chunks mais relevantes
+        retrieved_chunks = retriever.invoke(query)
+        
+        # 5. Formatação da Saída
+        contexto = "\n\n---\n\n".join(
+            f"Fonte: {doc.metadata.get('title', doc.metadata.get('source'))}\nConteúdo: {doc.page_content}"
+            for doc in retrieved_chunks
+        )
+        print("[NewsRAGTool] Pipeline concluído. Contexto relevante extraído.")
+        return contexto
+
+    # Encapsula o pipeline RAG completo como uma única ferramenta para o agente
+    news_rag_tool = Tool(
+        name="ferramenta_rag_noticias",
+        description="""
+            Use esta ferramenta para buscar e extrair informações contextuais de notícias recentes sobre saúde,
+            especialmente sobre Síndrome Respiratória Aguda Grave (SRAG), COVID-19, Influenza e vacinação.
+            A entrada deve ser um tópico de busca claro para encontrar contexto relevante.
+            Exemplo: 'contexto sobre o aumento de casos de SRAG em crianças no Brasil 2025'
+        """,
+        func=rag_pipeline
+    )
+
+    print("✅ Ferramenta RAG de Notícias configurada com sucesso.")
+    return news_rag_tool
