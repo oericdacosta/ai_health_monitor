@@ -14,3 +14,4 @@ __pycache__/
 # Ignorar bancos de dados gerados
 data/*.db
 data/*.parquet
+img/*.png
