@@ -180,7 +180,7 @@ def criar_ferramenta_rag_noticias() -> Tool:
     if not os.getenv("TAVILY_API_KEY"):
         raise ValueError("A chave de API TAVILY_API_KEY não foi encontrada no arquivo .env")
 
-    tavily_search = TavilySearchResults(max_results=4)
+    tavily_search = TavilySearchResults(max_results=5)
 
     news_rag_tool = Tool(
         name="ferramenta_rag_noticias",
