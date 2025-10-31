@@ -98,8 +98,8 @@ Siga os passos abaixo para configurar e executar o projeto em seu ambiente local
 ### Passo 1: Clonar o Repositório
 
 ```bash
-git clone [https://github.com/seu-usuario/seu-repositorio.git](https://github.com/seu-usuario/seu-repositorio.git)
-cd seu-repositorio
+git clone https://github.com/oericdacosta/ai_health_monitor.git
+cd ai_health_monitor
 ````
 
 ### Passo 2: Configurar o Ambiente Virtual
